@@ -148,10 +148,14 @@ def process_pdfs_logic():
                 error_rows.append(error)
                 rename_actions.append((old_name, dest))
 
-    # -------- SERIAL RENAMES (SAFE) --------
-    for old_name, dest in rename_actions:
+    # -------- PARALLEL RENAMES --------
+    def rename_blob_pair(pair):
+        old_name, dest = pair
         blob = bucket.blob(old_name)
-        bucket.rename_blob(blob, dest)
+        bucket.rename_blob(blob, dest) #rename means moving file from one folder to another
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(rename_blob_pair, rename_actions))
 
     # -------- BQ INSERTS --------
     if valid_rows:
