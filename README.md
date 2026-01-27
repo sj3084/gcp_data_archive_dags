@@ -144,7 +144,7 @@ We migrated from personal credentials to a **Service Account** architecture for 
 ---
 
 ## 📁 Project Structure
-
+```
 airflow/
  ├── dags/
  │   ├── dag_1_ingestion.py        # Ingest CSVs & Process PDFs
@@ -157,6 +157,7 @@ airflow/
 
 docker-compose.yml                 # Airflow Container Config
 README.md                          # Project Documentation
+```
 
 ## 🚀 Future Enhancements
 
