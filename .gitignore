@@ -1,0 +1,38 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Airflow generated files
+airflow.db
+airflow-webserver.pid
+logs/
+standalone_admin_password.txt
+
+# Env / secrets
+.env
+credentials/
+*.env
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Docker leftovers
+*.log
+
+# SQLite DBs
+*.db
+
+# pytest / test cache
+.pytest_cache/
+
+# Optional: compiled files
+*.egg-info/
+dist/
+build/

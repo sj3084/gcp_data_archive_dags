@@ -1,0 +1,11 @@
+product_id,product_name,category,brand,price,cost,stock_qty,created_date,is_active,rating
+P001,Laptop,Electronics,Dell,75000,62000,50,2023-01-10,True,4.5
+P002,Smartphone,Electronics,Samsung,45000,35000,80,2023-02-15,True,4.6
+P003,Headphones,Accessories,Boat,2500,1500,200,2023-03-20,True,4.2
+P004,Smartwatch,Accessories,Noise,5000,3500,120,2023-04-05,True,4.3
+P005,Tablet,Electronics,Apple,65000,52000,40,2023-05-18,True,4.7
+P006,Keyboard,Accessories,Logitech,3000,1800,150,2023-06-10,True,4.4
+P007,Mouse,Accessories,Logitech,1500,900,180,2023-07-12,True,4.3
+P008,Monitor,Electronics,LG,18000,14000,60,2023-08-08,True,4.5
+P009,Printer,Electronics,HP,12000,9500,30,2023-09-15,False,4.1
+P010,Router,Networking,TP-Link,4000,2800,90,2023-10-02,True,4.2

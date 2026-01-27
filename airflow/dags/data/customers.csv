@@ -1,0 +1,11 @@
+customer_id,first_name,last_name,email,phone,city,state,country,signup_date,is_active
+C001,Shubh,Joshi,shubh@example.com,9876543210,Mumbai,MH,India,2023-01-15,True
+C002,Aarav,Mehta,aarav@example.com,9876543211,Ahmedabad,GJ,India,2023-02-10,True
+C003,Riya,Kapoor,riya@example.com,9876543212,Delhi,DL,India,2023-03-05,True
+C004,Ananya,Sharma,ananya@example.com,9876543213,Jaipur,RJ,India,2023-04-12,True
+C005,Arjun,Patel,arjun@example.com,9876543214,Surat,GJ,India,2023-05-01,False
+C006,Pooja,Singh,pooja@example.com,9876543215,Lucknow,UP,India,2023-06-20,True
+C007,Rohan,Verma,rohan@example.com,9876543216,Indore,MP,India,2023-07-18,True
+C008,Neha,Iyer,neha@example.com,9876543217,Chennai,TN,India,2023-08-22,True
+C009,Karan,Malhotra,karan@example.com,9876543218,Chandigarh,PB,India,2023-09-09,False
+C010,Simran,Kaur,simran@example.com,9876543219,Amritsar,PB,India,2023-10-01,True

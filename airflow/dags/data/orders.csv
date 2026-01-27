@@ -1,0 +1,11 @@
+order_id,customer_id,product_id,order_date,quantity,unit_price,total_amount,payment_method,order_status,city
+O001,C001,P001,2023-11-01,1,75000,75000,Card,Delivered,Mumbai
+O002,C002,P002,2023-11-02,1,45000,45000,UPI,Delivered,Ahmedabad
+O003,C003,P003,2023-11-03,2,2500,5000,UPI,Delivered,Delhi
+O004,C004,P004,2023-11-04,1,5000,5000,Card,Cancelled,Jaipur
+O005,C005,P005,2023-11-05,1,65000,65000,NetBanking,Delivered,Surat
+O006,C006,P006,2023-11-06,3,3000,9000,UPI,Delivered,Lucknow
+O007,C007,P007,2023-11-07,2,1500,3000,UPI,Delivered,Indore
+O008,C008,P008,2023-11-08,1,18000,18000,Card,Delivered,Chennai
+O009,C009,P009,2023-11-09,1,12000,12000,NetBanking,Returned,Chandigarh
+O010,C010,P010,2023-11-10,2,4000,8000,UPI,Delivered,Amritsar
