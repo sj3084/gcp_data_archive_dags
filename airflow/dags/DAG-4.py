@@ -1,11 +1,14 @@
 from airflow import DAG
 from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
 from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
 
-PROJECT_ID = "archive-demo-project-484906"
-CURATED = "curated_dataset"
-BUSINESS = "business_curated_dataset"
-LOCATION = "europe-west2"
+PROJECT_ID = os.getenv("PROJECT_ID")
+BUCKET = os.getenv("GCS_BUCKET")
+CURATED = os.getenv("BQ_CURATED_DATASET")
+BUSINESS = os.getenv("BQ_BUSINESS_CURATED_DATASET")
+LOCATION = os.getenv("BQ_LOCATION")
 
 default_args = {
     "owner": "airflow",

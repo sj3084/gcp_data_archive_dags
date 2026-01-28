@@ -2,9 +2,11 @@ from airflow import DAG
 from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
 
-PROJECT_ID = "archive-demo-project-484906"
-RAW = "raw_dataset"
+PROJECT_ID = os.getenv("PROJECT_ID")
+RAW = os.getenv("BQ_RAW_DATASET")
 
 default_args = {
     "owner": "airflow",
