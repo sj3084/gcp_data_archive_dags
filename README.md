@@ -1,123 +1,166 @@
 # GCP Data Archival & Retrieval Platform
 
-**Compliance-Driven Data Engineering Pipeline**
+**Compliance-First Data Engineering Architecture on Google Cloud**
 
-This project implements an enterprise-grade data archival, governance, and analytics platform on **Google Cloud Platform (GCP)**. It ingests structured business data (CSV) and unstructured evidence (PDF invoices), links them dynamically, and enforces strict compliance rules before promoting data to analytics layers.
+This project implements an **enterprise-grade Archival, Compliance & Analytics Data Platform** on **Google Cloud Platform (GCP)**.  
+It ingests structured business data (CSV) and unstructured physical evidence (PDF invoices), dynamically links them, and enforces strict governance rules before promoting data to analytics layers.
+
+Unlike traditional ETL pipelines, this system follows a **Gatekeeper Pattern**:  
+> **Data is only promoted if physical proof exists.**
 
 ---
 
-## 📌 Business Rule
-> **"No Order is valid without physical proof (Invoice PDF)."**
+## 📌 Core Business Rule
+> **“No Order is valid without physical proof (Invoice PDF).”**
 
-Only orders with verified invoice PDFs are promoted to the **Golden Record (Curated Layer)**.
+Only orders with verified invoice PDFs are promoted to the **Golden Record (Operational Curated Layer)** and then to the **Business Analytics Layer**.
+
+This guarantees:
+* ✅ Regulatory compliance
+* ✅ Zero orphan records in analytics
+* ✅ Full auditability
+* ✅ Late-arrival recovery
 
 ---
 
 ## 🧩 Key Features
-* ✅ **Hybrid Ingestion:** Handles both Structured (CSV) and Unstructured (PDF) data types.
-* 🛡️ **Gatekeeper Architecture:** Enforces compliance by quarantining data without physical proof.
-* 🗂️ **Zoned Data Lake:** Organized into `Landing`, `Processed`, `Archive`, and `Error` zones.
-* 📊 **Analytics-Ready:** Produces clean, curated datasets for BI consumption.
-* 🔐 **Production Security:** Uses IAM Service Accounts (Least Privilege) instead of personal credentials.
-* 🔁 **Orchestration:** Fully automated using **Apache Airflow** (4 Sequential DAGs).
-* 📈 **Business Insights:** Derives CLV, segmentation, and product performance metrics.
+* ✅ **Hybrid Ingestion (CSV + PDF)**
+* 🛡️ **Gatekeeper Architecture** (hard compliance boundary)
+* 🗂️ **Zoned Data Lake** (Landing → Processed → Archive → Error)
+* 🧾 **Physical proof enforcement**
+* 🔁 **Late-arrival recovery** (Housekeeping DAG)
+* 📊 **BI-ready datasets**
+* 🔐 **IAM Service Account security**
+* 🧮 **Full audit trail** (`data_error_logs`)
+* ⚙️ **Apache Airflow orchestration** (5 DAGs)
 
 ---
 
-## 🏗️ Architecture Overview
+## 🏗️ System Architecture
 
-### 1. Storage Layer (Google Cloud Storage)
-The Data Lake is zoned for lifecycle management:
-* `landing/structured/` → Raw CSV files (Orders, Customers, etc.)
-* `landing/unstructured/` → Raw PDF invoices
-* `processed/` → Archived/Processed CSVs
-* `archive/pdfs/` → **Validated** Evidence (Linked to Orders)
-* `error/pdfs/` → **Orphan** or Invalid PDFs (Quarantine)
+### 1. Storage Layer – Google Cloud Storage (Data Lake)
 
-### 2. Compute & Warehouse (BigQuery)
-The data warehouse is stratified into three layers:
+| Zone | Path | Description |
+| :--- | :--- | :--- |
+| **Landing** | `landing/structured/` | Incoming CSV files |
+| | `landing/unstructured/` | Incoming invoice PDFs |
+| **Processed** | `processed/` | Archived structured files |
+| **Archive** | `archive/pdfs/` | Validated invoice PDFs |
+| **Error** | `error/pdfs/` | Orphan or invalid PDFs |
 
-#### **A. Raw Dataset (`raw_dataset`)**
-*Staging layer with loose schema (Strings).*
-* **Tables:** `customers_raw`, `orders_raw`, `order_items_raw`, `payments_raw`, `returns_raw`, `attachments_raw`, `pdf_manifest_raw`
-* **Audit Columns:** `row_status` (Default: `'FAIL'`), `ingestion_time`
+**Benefits:**
+* Clear lifecycle management
+* Audit-safe (no deletes, only moves)
+* Physical isolation of bad data
 
-#### **B. Curated Dataset (`curated_dataset`)**
-*Golden records with strict schema (Types) and referential integrity.*
-* **Tables:** `customers_curated`, `orders_curated`, `order_items_curated`, `payments_curated`, `returns_curated`, `attachments_curated`, `pdf_manifest_curated`
-* **Audit Log:** `data_error_logs` (Centralized error tracking)
+---
 
-#### **C. Business Curated Dataset (`business_curated_dataset`)**
-*Aggregated tables for reporting.*
+### 2. Data Warehouse – BigQuery
+
+#### A. Raw Dataset (`raw_dataset`)
+*Purpose: Staging layer (loose schema).*
+
+**Tables:** `customers_raw`, `orders_raw`, `order_items_raw`,  
+`payments_raw`, `returns_raw`, `attachments_raw`, `pdf_manifest_raw`
+
+**Metadata Columns:** * `row_status` (default = `FAIL`)
+* `ingestion_time`
+
+#### B. Curated Dataset (`curated_dataset`)
+*Purpose: Golden Record layer (strict schema & referential integrity).*
+
+**Tables:** `customers_curated`, `orders_curated`, `order_items_curated`,  
+`payments_curated`, `returns_curated`, `attachments_curated`, `pdf_manifest_curated`
+
+**Audit Table:** `data_error_logs`
+
+* **Tracks:** Compliance failures, Orphan PDFs, Invalid PDFs, Recovery events
+* **Includes:** `resolved_flag`, `resolved_at`
+
+#### C. Business Curated Dataset (`business_curated_dataset`)
+*Purpose: Analytics & BI.*
+
+**Tables:**
 * `customer_lifetime_value`
 * `customer_segments`
 * `monthly_sales`
 * `product_performance`
 * `product_returns`
 
----
-
-## 🔄 Pipeline Orchestration (Airflow)
-
-The system is driven by **4 Sequential DAGs**:
-
-### 🟢 DAG 1 — Ingest & Link
-**Goal:** Load raw data and physically validate PDFs.
-1.  **Structured:** Load CSVs into BigQuery Raw tables.
-    * Normalize: Set `row_status = 'FAIL'`, stamp `ingestion_time`.
-    * Move processed CSVs to `processed/`.
-2.  **Unstructured:** Scan PDF invoices & extract `order_id` from filename.
-    * **Match:** Move to `archive/` → Insert into `attachments_raw`.
-    * **Orphan:** Move to `error/` → Log in `data_error_logs`.
-
-### 🟡 DAG 2 — Governance & Audit
-**Goal:** Certify valid orders using the Gatekeeper logic.
-* **Logic:** Updates `row_status` to `'PASS'` **only** if a valid attachment exists.
-    ```sql
-    UPDATE orders_raw
-    SET row_status = 'PASS'
-    WHERE order_id IN (SELECT order_id FROM attachments_raw);
-    ```
-* *Result:* All unverified orders remain as `'FAIL'`.
-
-### 🔵 DAG 3 — Curation (Golden Records)
-**Goal:** Produce strict, analytics-ready datasets.
-* **Customers:** Fully curated.
-* **Orders:** Only orders with `row_status = 'PASS'`.
-* **Child Tables (Items, Payments, Returns):**
-    * Filtered via: `WHERE order_id IN (SELECT order_id FROM orders_curated)`
-* **Error Handling:** Failed orders are logged to `data_error_logs` to prevent reporting gaps.
-
-### 🟣 DAG 4 — Business Analytics
-**Goal:** Create business insight tables for dashboards.
-
-| Table Name | Description |
-| :--- | :--- |
-| `customer_lifetime_value` | Total revenue per customer |
-| `customer_segments` | High / Medium / Low value tiering |
-| `monthly_sales` | Monthly revenue & order volume trends |
-| `product_performance` | Revenue by product |
-| `product_returns` | Return rates by product |
+**Guarantee:** Analytics only use compliant data.
 
 ---
 
-## 🔐 Security Model
+## 🔄 Pipeline Orchestration (Apache Airflow – 5 DAGs)
 
-We migrated from personal credentials to a **Service Account** architecture for production safety.
+The platform uses a **Sequential Dependency Architecture**.
 
-### **Authentication Strategy**
-* ❌ **Original (Dev):** `gcloud auth application-default login` (Personal User)
-* ✅ **Current (Prod):** IAM Service Account
+### DAG 1 — Ingest & Link
+**Goal:** Ingest raw data and physically validate PDFs.
 
-### **Service Account Details**
-* **Account:** `airflow-sa@archive-demo-project-484906.iam.gserviceaccount.com`
-* **Configuration:** `GOOGLE_APPLICATION_CREDENTIALS=/opt/airflow/credentials/airflow-sa-key.json`
+1.  Load CSVs → Raw tables
+2.  Normalize metadata (`row_status`, `ingestion_time`)
+3.  Process PDFs in parallel:
+    * **Valid** → `archive/pdfs/` + `attachments_raw`
+    * **Orphan** → `error/pdfs/` + `data_error_logs`
+    * **Invalid** → `error/pdfs/` + `data_error_logs`
 
-### **IAM Roles (Least Privilege)**
-* `BigQuery Data Editor` (Read/Write Tables)
-* `BigQuery Job User` (Run Queries)
-* `Storage Object Admin` (Move/Rename Files)
-* `Storage Bucket Viewer` (List Files)
+### DAG 2 — Governance & Audit
+**Goal:** Certification layer (Gatekeeper).
+
+* **SQL-only**
+* Sets `row_status = PASS` only if attachment exists
+* Orders without PDFs remain `FAIL`
+
+*Creates a hard compliance boundary.*
+
+### DAG 3 — Operational Curation (Golden Records)
+**Goal:** Create trusted datasets.
+
+* Filters only `row_status = PASS` orders
+* Cascades filtering to: `order_items`, `payments`, `returns`, `attachments`
+
+*Guarantee: Zero orphan records.*
+
+### DAG 4 — Business Analytics Curation
+**Goal:** BI-ready datasets.
+
+* **Creates:** Customer Lifetime Value, Customer Segments, Monthly Sales, Product Performance, Product Returns
+
+### DAG 5 — Housekeeping & Remediation
+**Goal:** Recover late-arriving invoices.
+
+*Runs independently of ingestion.*
+
+**Logic:**
+1.  Scans `landing/unstructured/` for new PDFs
+2.  Matches against unresolved compliance failures
+3.  **If found:**
+    * Moves PDF → `archive/pdfs/`
+    * Inserts into `attachments_raw`
+    * Updates `data_error_logs` (`resolved_flag = true`, `resolved_at = timestamp`)
+
+**Enables:**
+* Late invoice recovery
+* Error lifecycle tracking
+* Regulatory audit history
+
+*Governance (DAG 2) is rerun intentionally after remediation.*
+
+---
+
+## 🔐 Security & Authentication
+
+Uses a dedicated **IAM Service Account** (no user credentials).
+
+* **Service Account:** `airflow-sa@archive-demo-project-484906.iam.gserviceaccount.com`
+* **Authentication:** `GOOGLE_APPLICATION_CREDENTIALS`
+* **IAM Roles:**
+    * BigQuery Data Editor
+    * BigQuery Job User
+    * Storage Object Admin
+
+**Benefits:** Least privilege, Auditable, Portable, Production-ready.
 
 ---
 
@@ -125,38 +168,43 @@ We migrated from personal credentials to a **Service Account** architecture for 
 
 | Tool | Purpose |
 | :--- | :--- |
-| **Google Cloud Storage** | Data Lake (Landing, Archive) |
+| **Google Cloud Storage** | Data Lake |
 | **BigQuery** | Enterprise Data Warehouse |
-| **Apache Airflow** | Workflow Orchestration & Scheduling |
-| **Python** | Custom Pipeline Logic & GCS Operations |
-| **SQL (Standard)** | Data Transformations & Business Logic |
-| **Docker** | Local Airflow Runtime |
+| **Apache Airflow** | Orchestration |
+| **Python** | PDF parsing, concurrency, recovery logic |
+| **SQL (Standard)** | Governance & transformations |
+| **Docker** | Local Airflow runtime |
 
 ---
 
-## 📊 Business Value
+## 📊 Business Impact
 
-1.  **Regulatory Compliance:** Ensures 100% of reported revenue is backed by physical evidence.
-2.  **Data Integrity:** Prevents "Ghost Orders" (orphans) from corrupting financial reports.
-3.  **Analytics-Ready:** Provides clean, type-safe datasets for immediate BI consumption.
-4.  **Actionable Insights:** Enables deep analysis of Customer Segments, Sales Trends, and Product Returns.
+1.  **Regulatory compliance** – every order has physical proof
+2.  **Golden records** – zero orphan analytics
+3.  **Trusted BI** – accurate KPIs
+4.  **Operational excellence** – retryable, auditable, recoverable
+5.  **Error lifecycle management** – unresolved → resolved tracking
+
+*This platform transforms raw, chaotic data into a governed enterprise data asset.*
 
 ---
 
 ## 📁 Project Structure
+
 ```
 airflow/
- ├── dags/
- │   ├── dag_1_ingestion.py        # Ingest CSVs & Process PDFs
- │   ├── dag_2_governance.py       # Gatekeeper Logic (Pass/Fail)
- │   ├── dag_3_curation.py         # Create Golden Records
- │   └── dag_4_business_analytics.py # KPI Tables
- └── sql/
-     ├── curated_ddls.sql          # Table Definitions (Curated)
-     └── business_ddls.sql         # Table Definitions (Business)
+├── dags/
+│   ├── dag_1_ingestion.py
+│   ├── dag_2_governance.py
+│   ├── dag_3_curation.py
+│   ├── dag_4_business_analytics.py
+│   └── dag_5_housekeeping.py
+└── sql/
+    ├── curated_ddls.sql
+    └── business_ddls.sql
 
-docker-compose.yml                 # Airflow Container Config
-README.md                          # Project Documentation
+docker-compose.yml
+README.md
 ```
 
 ## 🚀 Future Enhancements
