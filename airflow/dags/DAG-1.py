@@ -84,6 +84,8 @@ def process_pdfs_logic():
                 "raw_data": json.dumps({"file_name": file_name}),
                 "retry_count": 0,
                 "created_at": now.isoformat(),
+                "resolved_flag": False,
+                "resolved_at": None,
             }
             return ("error", blob.name, dest, error)
 
@@ -108,6 +110,8 @@ def process_pdfs_logic():
                 "raw_data": json.dumps({"file_name": file_name, "order_id": order_id}),
                 "retry_count": 0,
                 "created_at": now.isoformat(),
+                "resolved_flag": False,
+                "resolved_at": None,
             }
 
             return ("orphan", blob.name, dest, orphan, error)

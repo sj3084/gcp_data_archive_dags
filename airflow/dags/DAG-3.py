@@ -81,14 +81,16 @@ with DAG(
 
                 -- FAIL orders go to error logs
                 INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
-                (record_id, source_table, error_message, raw_data, retry_count, created_at)
+                (record_id, source_table, error_message, raw_data, retry_count, created_at, resolved_flag, resolved_at)
                 SELECT
                     order_id,
                     'orders_raw',
                     'Missing Invoice PDF',
                     TO_JSON(t),
                     0,
-                    CURRENT_TIMESTAMP()
+                    CURRENT_TIMESTAMP(),
+                    FALSE AS resolved_flag,
+                    NULL AS resolved_at
                 FROM `{PROJECT_ID}.{RAW}.orders_raw` t
                 WHERE row_status = 'FAIL';
                 """,
