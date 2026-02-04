@@ -1,10 +1,10 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime, timezone, timedelta
 from google.cloud import storage, bigquery
 import os
 import re
-import json
 import logging
 from dotenv import load_dotenv
 
@@ -31,7 +31,7 @@ def sweep_and_resolve_pdfs():
 
     now = datetime.now(timezone.utc)
 
-    # 1️⃣ get unresolved missing-PDF errors
+    # Get unresolved missing-PDF errors
     error_rows = bq_client.query(f"""
         SELECT record_id
         FROM `{PROJECT_ID}.{CURATED}.data_error_logs`
@@ -74,23 +74,24 @@ def sweep_and_resolve_pdfs():
             updates.append(order_id)
             moves.append((old_path, new_path))
 
-    # 2️⃣ move PDFs
+    # Move PDFs
     for old_path, new_path in moves:
         blob = bucket.blob(old_path)
         if blob.exists():
             bucket.rename_blob(blob, new_path)
             logging.info(f"Moved {old_path} → {new_path}")
 
-    # 3️⃣ insert into attachments_raw
+    # Insert into attachments_raw
     if recovered_rows:
         bq_client.insert_rows_json(
             f"{PROJECT_ID}.{RAW}.attachments_raw",
             recovered_rows
         )
 
-    # 4️⃣ update error table
     if updates:
         order_list = ",".join(f"'{o}'" for o in updates)
+
+        # Mark error logs as resolved
         bq_client.query(f"""
             UPDATE `{PROJECT_ID}.{CURATED}.data_error_logs`
             SET resolved_flag = true,
@@ -99,6 +100,14 @@ def sweep_and_resolve_pdfs():
               AND error_message = 'Missing Invoice PDF'
               AND resolved_flag = false
         """).result()
+
+        # Reset orders_raw status so DAG-2 can certify it
+        bq_client.query(f"""
+            UPDATE `{PROJECT_ID}.{RAW}.orders_raw`
+            SET row_status = 'PASS'
+            WHERE order_id IN ({order_list})
+        """).result()
+
 
 with DAG(
     dag_id="dag_5_housekeeping_sweeper",
@@ -113,4 +122,9 @@ with DAG(
         python_callable=sweep_and_resolve_pdfs
     )
 
-    sweep_task
+    trigger_dag_2 = TriggerDagRunOperator(
+        task_id="trigger_dag_2",
+        trigger_dag_id="dag_2_governance_and_audit",
+    )
+
+    sweep_task >> trigger_dag_2

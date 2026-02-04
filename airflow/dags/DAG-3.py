@@ -83,16 +83,23 @@ with DAG(
                 INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
                 (record_id, source_table, error_message, raw_data, retry_count, created_at, resolved_flag, resolved_at)
                 SELECT
-                    order_id,
-                    'orders_raw',
-                    'Missing Invoice PDF',
-                    TO_JSON(t),
-                    0,
-                    CURRENT_TIMESTAMP(),
-                    FALSE AS resolved_flag,
-                    NULL AS resolved_at
-                FROM `{PROJECT_ID}.{RAW}.orders_raw` t
-                WHERE row_status = 'FAIL';
+                o.order_id,
+                'orders_raw',
+                'Missing Invoice PDF',
+                TO_JSON(o),
+                0,
+                CURRENT_TIMESTAMP(),
+                FALSE,
+                NULL
+                FROM `{PROJECT_ID}.{RAW}.orders_raw` o
+                WHERE o.row_status = 'FAIL'
+                -- Avoid duplicates
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM `{PROJECT_ID}.{CURATED}.data_error_logs` e
+                    WHERE e.record_id = o.order_id
+                        AND e.error_message = 'Missing Invoice PDF'
+                );
                 """,
                 "useLegacySql": False,
             }
