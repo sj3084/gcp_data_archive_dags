@@ -1,4 +1,335 @@
 from airflow import DAG
+from airflow.sensors.python import PythonSensor
+from airflow.providers.google.cloud.transfers.gcs_to_bigquery import GCSToBigQueryOperator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone, timedelta
+from google.cloud import storage, bigquery
+import logging
+import json
+import re
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# -------------------------
+# CONFIG
+# -------------------------
+PROJECT_ID = os.getenv("PROJECT_ID")
+BUCKET = os.getenv("GCS_BUCKET")
+RAW = os.getenv("BQ_RAW_DATASET")
+CURATED = os.getenv("BQ_CURATED_DATASET")
+LOCATION = os.getenv("BQ_LOCATION")
+
+default_args = {
+    "owner": "airflow",
+    "retries": 1,
+    "retry_delay": timedelta(minutes=1),
+}
+
+CUSTOMERS_SCHEMA = [
+    {"name": "customer_id", "type": "STRING"},
+    {"name": "customer_name", "type": "STRING"},
+    {"name": "email", "type": "STRING"},
+    {"name": "phone", "type": "STRING"},
+    {"name": "created_date", "type": "STRING"},
+    {"name": "country", "type": "STRING"},
+]
+
+ORDERS_SCHEMA = [
+    {"name": "order_id", "type": "STRING"},
+    {"name": "customer_id", "type": "STRING"},
+    {"name": "order_date", "type": "STRING"},
+    {"name": "order_status", "type": "STRING"},
+    {"name": "order_total", "type": "STRING"},
+    {"name": "source_updated_at", "type": "STRING"},
+]
+
+ORDER_ITEMS_SCHEMA = [
+    {"name": "order_item_id", "type": "STRING"},
+    {"name": "order_id", "type": "STRING"},
+    {"name": "product_id", "type": "STRING"},
+    {"name": "product_name", "type": "STRING"},
+    {"name": "quantity", "type": "STRING"},
+    {"name": "unit_price", "type": "STRING"},
+]
+
+PAYMENTS_SCHEMA = [
+    {"name": "payment_id", "type": "STRING"},
+    {"name": "order_id", "type": "STRING"},
+    {"name": "payment_date", "type": "STRING"},
+    {"name": "payment_method", "type": "STRING"},
+    {"name": "amount", "type": "STRING"},
+    {"name": "payment_status", "type": "STRING"},
+]
+
+RETURNS_SCHEMA = [
+    {"name": "return_id", "type": "STRING"},
+    {"name": "order_id", "type": "STRING"},
+    {"name": "return_date", "type": "STRING"},
+    {"name": "reason", "type": "STRING"},
+    {"name": "refund_amount", "type": "STRING"},
+]
+
+PDF_MANIFEST_SCHEMA = [
+    {"name": "file_name", "type": "STRING"},
+    {"name": "order_id", "type": "STRING"},
+    {"name": "document_type", "type": "STRING"},
+    {"name": "created_date", "type": "STRING"},
+]
+
+SCHEMAS = {
+    "customers": CUSTOMERS_SCHEMA,
+    "orders": ORDERS_SCHEMA,
+    "order_items": ORDER_ITEMS_SCHEMA,
+    "payments": PAYMENTS_SCHEMA,
+    "returns": RETURNS_SCHEMA,
+    "pdf_manifest": PDF_MANIFEST_SCHEMA,
+}
+
+# -------------------------
+# CSV SENSOR (WAIT UNTIL TIMEOUT)
+# -------------------------
+def csv_exists():
+    client = storage.Client()
+    bucket = client.bucket(BUCKET)
+
+    for blob in bucket.list_blobs(prefix="landing/structured/"):
+        if blob.name.endswith(".csv"):
+            logging.info(f"Found CSV: {blob.name}")
+            return True
+
+    logging.info("No CSVs found yet. Waiting...")
+    return False
+
+# -------------------------
+# CSV MOVE
+# -------------------------
+def move_csvs_logic():
+    client = storage.Client()
+    bucket = client.bucket(BUCKET)
+
+    for blob in bucket.list_blobs(prefix="landing/structured/"):
+        if blob.name.endswith("/") or not blob.name.endswith(".csv"):
+            continue
+        dest = f"processed/{os.path.basename(blob.name)}"
+        bucket.rename_blob(blob, dest)
+        logging.info(f"Moved CSV to {dest}")
+
+# -------------------------
+# PDF PROCESSING (UNCHANGED)
+# -------------------------
+def process_pdfs_logic():
+    storage_client = storage.Client()
+    bq_client = bigquery.Client(project=PROJECT_ID, location=LOCATION)
+    bucket = storage_client.bucket(BUCKET)
+
+    orders = {
+        row.order_id
+        for row in bq_client.query(
+            f"SELECT order_id FROM `{PROJECT_ID}.{RAW}.orders_raw`"
+        ).result()
+    }
+
+    blobs = list(bucket.list_blobs(prefix="landing/unstructured/"))
+    if not blobs:
+        logging.info("No PDFs found, skipping PDF processing")
+        return
+
+    now = datetime.now(timezone.utc)
+    pattern = r"^invoice_(O\d+)_\d{8}\.pdf$"
+
+    valid_rows, orphan_rows, error_rows, rename_actions = [], [], [], []
+
+    def classify(blob):
+        if blob.name.endswith("/") or not blob.name.lower().endswith(".pdf"):
+            return None
+
+        fname = os.path.basename(blob.name)
+        match = re.match(pattern, fname)
+
+        if not match:
+            return ("error", blob.name, f"error/pdfs/{fname}", {
+                "record_id": fname,
+                "source_table": "pdf_ingest",
+                "error_message": "Invalid PDF filename format",
+                "raw_data": json.dumps({"file": fname}),
+                "retry_count": 0,
+                "created_at": now.isoformat(),
+                "resolved_flag": False,
+                "resolved_at": None,
+            })
+
+        order_id = match.group(1)
+
+        if order_id not in orders:
+            return ("orphan", blob.name, f"error/pdfs/{fname}", {
+                "file_name": fname,
+                "order_id": order_id,
+                "gcs_path": f"gs://{BUCKET}/error/pdfs/{fname}",
+                "detected_at": now.isoformat(),
+                "reason": "Order ID not found",
+            }, {
+                "record_id": order_id,
+                "source_table": "orphan_pdfs",
+                "error_message": "Order ID missing in Orders",
+                "raw_data": json.dumps({"file": fname}),
+                "retry_count": 0,
+                "created_at": now.isoformat(),
+                "resolved_flag": False,
+                "resolved_at": None,
+            })
+
+        return ("valid", blob.name, f"archive/pdfs/{fname}", {
+            "order_id": order_id,
+            "file_name": fname,
+            "gcs_path": f"gs://{BUCKET}/archive/pdfs/{fname}",
+            "ingestion_time": now.isoformat(),
+            "source_file": fname,
+        })
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        for future in as_completed([ex.submit(classify, b) for b in blobs]):
+            res = future.result()
+            if not res:
+                continue
+            if res[0] == "valid":
+                _, old, dest, row = res
+                valid_rows.append(row)
+                rename_actions.append((old, dest))
+            elif res[0] == "orphan":
+                _, old, dest, orphan, error = res
+                orphan_rows.append(orphan)
+                error_rows.append(error)
+                rename_actions.append((old, dest))
+            else:
+                _, old, dest, error = res
+                error_rows.append(error)
+                rename_actions.append((old, dest))
+
+    for old, dest in rename_actions:
+        bucket.rename_blob(bucket.blob(old), dest)
+
+    if valid_rows:
+        bq_client.insert_rows_json(f"{PROJECT_ID}.{RAW}.attachments_raw", valid_rows)
+    if orphan_rows:
+        bq_client.insert_rows_json(f"{PROJECT_ID}.{CURATED}.orphan_pdfs", orphan_rows)
+    if error_rows:
+        bq_client.insert_rows_json(f"{PROJECT_ID}.{CURATED}.data_error_logs", error_rows)
+
+# -------------------------
+# DAG
+# -------------------------
+with DAG(
+    dag_id="dag_1_ingest_and_link",
+    start_date=datetime(2026, 1, 19),
+    schedule_interval=None,
+    catchup=False,
+    default_args=default_args,
+) as dag:
+
+    wait_for_csvs = PythonSensor(
+        task_id="wait_for_csvs",
+        python_callable=csv_exists,
+        poke_interval=60,
+        timeout=3600,
+        mode="reschedule",
+    )
+
+    def csv_loader(task_id, filename, table):
+        return GCSToBigQueryOperator(
+            task_id=task_id,
+            bucket=BUCKET,
+            source_objects=[f"landing/structured/{filename}"],
+            destination_project_dataset_table=f"{PROJECT_ID}.{RAW}.{table}_raw",
+            schema_fields=SCHEMAS[table],
+            skip_leading_rows=1,
+            write_disposition="WRITE_APPEND", #Changed from WRITE_TRUNCATE to WRITE_APPEND for incremental loads
+            autodetect=False,
+            ignore_unknown_values=False,
+        )
+
+    load_customers = csv_loader("load_customers", "customers.csv", "customers")
+    load_orders = csv_loader("load_orders", "orders.csv", "orders")
+    load_items = csv_loader("load_items", "order_items.csv", "order_items")
+    load_payments = csv_loader("load_payments", "payments.csv", "payments")
+    load_returns = csv_loader("load_returns", "returns.csv", "returns")
+    load_pdf_manifest = csv_loader("load_pdf_manifest", "pdf_manifest.csv", "pdf_manifest")
+
+    patch_metadata = BigQueryInsertJobOperator(
+        task_id="patch_metadata",
+        configuration={
+            "query": {
+                "query": f"""
+                UPDATE `{PROJECT_ID}.{RAW}.customers_raw`
+                SET ingestion_time = CURRENT_TIMESTAMP(),
+                    source_file = 'customers.csv'
+                WHERE ingestion_time IS NULL;
+
+                UPDATE `{PROJECT_ID}.{RAW}.orders_raw`
+                SET ingestion_time = CURRENT_TIMESTAMP(),
+                    source_file = 'orders.csv',
+                    row_status = COALESCE(row_status, 'FAIL')
+                WHERE ingestion_time IS NULL;
+
+                UPDATE `{PROJECT_ID}.{RAW}.order_items_raw`
+                SET ingestion_time = CURRENT_TIMESTAMP(),
+                    source_file = 'order_items.csv'
+                WHERE ingestion_time IS NULL;
+
+                UPDATE `{PROJECT_ID}.{RAW}.payments_raw`
+                SET ingestion_time = CURRENT_TIMESTAMP(),
+                    source_file = 'payments.csv'
+                WHERE ingestion_time IS NULL;
+
+                UPDATE `{PROJECT_ID}.{RAW}.returns_raw`
+                SET ingestion_time = CURRENT_TIMESTAMP(),
+                    source_file = 'returns.csv'
+                WHERE ingestion_time IS NULL;
+
+                UPDATE `{PROJECT_ID}.{RAW}.pdf_manifest_raw`
+                SET ingestion_time = CURRENT_TIMESTAMP(),
+                    source_file = 'pdf_manifest.csv'
+                WHERE ingestion_time IS NULL;
+                """,
+                "useLegacySql": False,
+            }
+        },
+    )
+
+    move_csvs = PythonOperator(
+        task_id="move_csvs",
+        python_callable=move_csvs_logic,
+    )
+
+    process_pdfs = PythonOperator(
+        task_id="process_pdfs",
+        python_callable=process_pdfs_logic,
+    )
+
+    trigger_dag_2 = TriggerDagRunOperator(
+        task_id="trigger_dag_2",
+        trigger_dag_id="dag_2_governance_and_audit",
+    )
+
+    (
+        wait_for_csvs
+        >> [
+            load_customers,
+            load_orders,
+            load_items,
+            load_payments,
+            load_returns,
+            load_pdf_manifest,
+        ]
+        >> patch_metadata >> move_csvs >> process_pdfs >> trigger_dag_2
+    )
+
+'''
+from airflow import DAG
 from airflow.providers.google.cloud.transfers.gcs_to_bigquery import GCSToBigQueryOperator
 from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
 from airflow.operators.python import PythonOperator
@@ -335,3 +666,4 @@ with DAG(
 
     [load_customers, load_orders, load_items, load_payments, load_returns, load_pdf_manifest] >> normalize
     normalize >> move_csv >> process_pdfs >> trigger_dag_2
+'''

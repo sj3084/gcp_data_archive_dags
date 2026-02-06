@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 
+load_dotenv()
+
 PROJECT_ID = os.getenv("PROJECT_ID")
 RAW = os.getenv("BQ_RAW_DATASET")
 CURATED = os.getenv("BQ_CURATED_DATASET")
@@ -36,16 +38,43 @@ with DAG(
                 TRUNCATE TABLE `{PROJECT_ID}.{CURATED}.customers_curated`;
 
                 INSERT INTO `{PROJECT_ID}.{CURATED}.customers_curated`
-                (customer_id, customer_name, email, phone, created_date, country, ingestion_time)
                 SELECT
                     customer_id,
                     customer_name,
                     email,
                     CAST(phone AS STRING),
-                    CAST(created_date AS DATE),
+                    parsed_created_date AS created_date,
                     country,
                     ingestion_time
-                FROM `{PROJECT_ID}.{RAW}.customers_raw`;
+                FROM (
+                    SELECT *,
+                        CASE
+                            WHEN REGEXP_CONTAINS(created_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                                THEN PARSE_DATE('%d-%m-%Y', created_date)
+                            WHEN REGEXP_CONTAINS(created_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                                THEN PARSE_DATE('%Y-%m-%d', created_date)
+                            ELSE NULL
+                        END AS parsed_created_date
+                    FROM `{PROJECT_ID}.{RAW}.customers_raw`
+                )
+                WHERE parsed_created_date IS NOT NULL;
+
+                INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
+                SELECT
+                    customer_id,
+                    'customers_raw',
+                    'Invalid created_date format',
+                    TO_JSON(c),
+                    0,
+                    CURRENT_TIMESTAMP(),
+                    FALSE,
+                    NULL
+                FROM `{PROJECT_ID}.{RAW}.customers_raw` c
+                WHERE created_date IS NOT NULL
+                  AND NOT (
+                    REGEXP_CONTAINS(created_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                    OR REGEXP_CONTAINS(created_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                  );
                 """,
                 "useLegacySql": False,
             }
@@ -63,43 +92,60 @@ with DAG(
                 "query": f"""
                 TRUNCATE TABLE `{PROJECT_ID}.{CURATED}.orders_curated`;
 
-                -- PASS orders only
                 INSERT INTO `{PROJECT_ID}.{CURATED}.orders_curated`
-                (order_id, customer_id, order_date, order_status, order_total,
-                 source_updated_at, row_status, ingestion_time)
                 SELECT
                     order_id,
                     customer_id,
-                    CAST(order_date AS DATE),
+                    parsed_order_date AS order_date,
                     order_status,
                     CAST(order_total AS FLOAT64),
                     CAST(source_updated_at AS TIMESTAMP),
                     row_status,
                     ingestion_time
-                FROM `{PROJECT_ID}.{RAW}.orders_raw`
-                WHERE row_status = 'PASS';
+                FROM (
+                    SELECT *,
+                        CASE
+                            WHEN REGEXP_CONTAINS(order_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                                THEN PARSE_DATE('%d-%m-%Y', order_date)
+                            WHEN REGEXP_CONTAINS(order_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                                THEN PARSE_DATE('%Y-%m-%d', order_date)
+                            ELSE NULL
+                        END AS parsed_order_date
+                    FROM `{PROJECT_ID}.{RAW}.orders_raw`
+                    WHERE row_status = 'PASS'
+                )
+                WHERE parsed_order_date IS NOT NULL;
 
-                -- FAIL orders go to error logs
                 INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
-                (record_id, source_table, error_message, raw_data, retry_count, created_at, resolved_flag, resolved_at)
                 SELECT
-                o.order_id,
-                'orders_raw',
-                'Missing Invoice PDF',
-                TO_JSON(o),
-                0,
-                CURRENT_TIMESTAMP(),
-                FALSE,
-                NULL
+                    order_id,
+                    'orders_raw',
+                    'Invalid order_date format',
+                    TO_JSON(o),
+                    0,
+                    CURRENT_TIMESTAMP(),
+                    FALSE,
+                    NULL
                 FROM `{PROJECT_ID}.{RAW}.orders_raw` o
-                WHERE o.row_status = 'FAIL'
-                -- Avoid duplicates
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM `{PROJECT_ID}.{CURATED}.data_error_logs` e
-                    WHERE e.record_id = o.order_id
-                        AND e.error_message = 'Missing Invoice PDF'
-                );
+                WHERE row_status = 'PASS'
+                  AND order_date IS NOT NULL
+                  AND NOT (
+                    REGEXP_CONTAINS(order_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                    OR REGEXP_CONTAINS(order_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                  );
+
+                INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
+                SELECT
+                    order_id,
+                    'orders_raw',
+                    'Missing Invoice PDF',
+                    TO_JSON(o),
+                    0,
+                    CURRENT_TIMESTAMP(),
+                    FALSE,
+                    NULL
+                FROM `{PROJECT_ID}.{RAW}.orders_raw` o
+                WHERE row_status = 'FAIL';
                 """,
                 "useLegacySql": False,
             }
@@ -151,15 +197,43 @@ with DAG(
                 SELECT
                     payment_id,
                     order_id,
-                    CAST(payment_date AS DATE),
+                    parsed_payment_date AS payment_date,
                     payment_method,
                     CAST(amount AS FLOAT64),
                     payment_status,
                     ingestion_time
-                FROM `{PROJECT_ID}.{RAW}.payments_raw`
-                WHERE order_id IN (
+                FROM (
+                    SELECT *,
+                        CASE
+                            WHEN REGEXP_CONTAINS(payment_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                                THEN PARSE_DATE('%d-%m-%Y', payment_date)
+                            WHEN REGEXP_CONTAINS(payment_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                                THEN PARSE_DATE('%Y-%m-%d', payment_date)
+                            ELSE NULL
+                        END AS parsed_payment_date
+                    FROM `{PROJECT_ID}.{RAW}.payments_raw`
+                )
+                WHERE parsed_payment_date IS NOT NULL
+                  AND order_id IN (
                     SELECT order_id FROM `{PROJECT_ID}.{CURATED}.orders_curated`
-                );
+                  );
+
+                INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
+                SELECT
+                    payment_id,
+                    'payments_raw',
+                    'Invalid payment_date format',
+                    TO_JSON(p),
+                    0,
+                    CURRENT_TIMESTAMP(),
+                    FALSE,
+                    NULL
+                FROM `{PROJECT_ID}.{RAW}.payments_raw` p
+                WHERE payment_date IS NOT NULL
+                  AND NOT (
+                    REGEXP_CONTAINS(payment_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                    OR REGEXP_CONTAINS(payment_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                  );
                 """,
                 "useLegacySql": False,
             }
@@ -181,14 +255,42 @@ with DAG(
                 SELECT
                     return_id,
                     order_id,
-                    CAST(return_date AS DATE),
+                    parsed_return_date AS return_date,
                     reason,
                     CAST(refund_amount AS FLOAT64),
                     ingestion_time
-                FROM `{PROJECT_ID}.{RAW}.returns_raw`
-                WHERE order_id IN (
+                FROM (
+                    SELECT *,
+                        CASE
+                            WHEN REGEXP_CONTAINS(return_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                                THEN PARSE_DATE('%d-%m-%Y', return_date)
+                            WHEN REGEXP_CONTAINS(return_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                                THEN PARSE_DATE('%Y-%m-%d', return_date)
+                            ELSE NULL
+                        END AS parsed_return_date
+                    FROM `{PROJECT_ID}.{RAW}.returns_raw`
+                )
+                WHERE parsed_return_date IS NOT NULL
+                  AND order_id IN (
                     SELECT order_id FROM `{PROJECT_ID}.{CURATED}.orders_curated`
-                );
+                  );
+
+                INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
+                SELECT
+                    return_id,
+                    'returns_raw',
+                    'Invalid return_date format',
+                    TO_JSON(r),
+                    0,
+                    CURRENT_TIMESTAMP(),
+                    FALSE,
+                    NULL
+                FROM `{PROJECT_ID}.{RAW}.returns_raw` r
+                WHERE return_date IS NOT NULL
+                  AND NOT (
+                    REGEXP_CONTAINS(return_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                    OR REGEXP_CONTAINS(return_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                  );
                 """,
                 "useLegacySql": False,
             }
@@ -238,26 +340,48 @@ with DAG(
                     file_name,
                     order_id,
                     document_type,
-                    CAST(created_date AS DATE),
+                    parsed_created_date AS created_date,
                     ingestion_time
-                FROM `{PROJECT_ID}.{RAW}.pdf_manifest_raw`;
+                FROM (
+                    SELECT *,
+                        CASE
+                            WHEN REGEXP_CONTAINS(created_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                                THEN PARSE_DATE('%d-%m-%Y', created_date)
+                            WHEN REGEXP_CONTAINS(created_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                                THEN PARSE_DATE('%Y-%m-%d', created_date)
+                            ELSE NULL
+                        END AS parsed_created_date
+                    FROM `{PROJECT_ID}.{RAW}.pdf_manifest_raw`
+                )
+                WHERE parsed_created_date IS NOT NULL;
+
+                INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
+                SELECT
+                    file_name,
+                    'pdf_manifest_raw',
+                    'Invalid created_date format',
+                    TO_JSON(p),
+                    0,
+                    CURRENT_TIMESTAMP(),
+                    FALSE,
+                    NULL
+                FROM `{PROJECT_ID}.{RAW}.pdf_manifest_raw` p
+                WHERE created_date IS NOT NULL
+                  AND NOT (
+                    REGEXP_CONTAINS(created_date, r'^\\d{{2}}-\\d{{2}}-\\d{{4}}$')
+                    OR REGEXP_CONTAINS(created_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
+                  );
                 """,
                 "useLegacySql": False,
             }
         },
     )
 
-    # =========================================================
-    # TRIGGER DAG-4
-    # =========================================================
     trigger_dag_4 = TriggerDagRunOperator(
         task_id="trigger_dag_4",
         trigger_dag_id="dag_4_business_aggregations",
     )
 
-    # =========================================================
-    # FLOW
-    # =========================================================
     curate_customers >> curate_orders
     curate_orders >> [
         curate_items,
