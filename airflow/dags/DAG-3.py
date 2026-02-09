@@ -116,6 +116,7 @@ with DAG(
                 )
                 WHERE parsed_order_date IS NOT NULL;
 
+                -- Invalid order_date
                 INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
                 SELECT
                     order_id,
@@ -134,6 +135,7 @@ with DAG(
                     OR REGEXP_CONTAINS(order_date, r'^\\d{{4}}-\\d{{2}}-\\d{{2}}$')
                   );
 
+                -- Missing Invoice PDF (IDEMPOTENT)
                 INSERT INTO `{PROJECT_ID}.{CURATED}.data_error_logs`
                 SELECT
                     order_id,
@@ -145,7 +147,15 @@ with DAG(
                     FALSE,
                     NULL
                 FROM `{PROJECT_ID}.{RAW}.orders_raw` o
-                WHERE row_status = 'FAIL';
+                WHERE row_status = 'FAIL'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM `{PROJECT_ID}.{CURATED}.data_error_logs` existing
+                      WHERE existing.record_id = o.order_id
+                        AND existing.source_table = 'orders_raw'
+                        AND existing.error_message = 'Missing Invoice PDF'
+                        AND existing.resolved_flag = FALSE
+                  );
                 """,
                 "useLegacySql": False,
             }
